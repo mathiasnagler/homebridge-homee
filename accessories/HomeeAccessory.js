@@ -11,24 +11,80 @@ function HomeeAccessory(name, uuid, profile, node, platform, instance) {
     this.attributes = node.attributes;
     this.editableAttributes = [];
     this.map = [];
+    this.pendingAttributes = {};
 }
 
 HomeeAccessory.prototype.setValue = function (value, callback, context, uuid, attributeId) {
     if (context && context == 'ws') {
 		callback(null, value);
 	    return;
-	}
+	   }
+
+     let oldValue = this.service.getCharacteristic(this.map[attributeId]).value;
+     if (value == oldValue) {
+       callback(null, value);
+       return
+     }
 
     if (value === true) value = 1;
     if (value === false) value = 0;
 
-    this.log.debug('Setting ' + this.name + ' to ' + value);
-    this.platform.homee.send(
-        'PUT:/nodes/' + this.nodeId + '/attributes/' + attributeId + '?target_value=' + value
-    );
-
+    this.pendingAttributes[attributeId] = value
+    this.debouncedCommit()
     callback(null, value);
 }
+
+HomeeAccessory.prototype.debouncedCommit = debounce(function() {
+    var commands = []
+    var containsBrightness = false
+    for (var attributeId in this.pendingAttributes) {
+        var attribute = this.attributes.find(function(attribute) {
+            return attribute.id == attributeId
+        });
+
+        var HAPType = attributeTypes.getHAPTypeByAttributeType(attribute.type)
+        if (HAPType == 'Brightness') {
+            containsBrightness = true
+            break
+        }
+    }
+
+    for (var attributeId in this.pendingAttributes) {
+        var attribute = this.attributes.find(function(attribute) {
+            return attribute.id == attributeId
+        });
+
+        var HAPType = attributeTypes.getHAPTypeByAttributeType(attribute.type)
+        if (containsBrightness && HAPType == 'On')
+            continue
+
+        if (this.pendingAttributes.hasOwnProperty(attributeId))
+            commands.push('PUT:/nodes/' + this.nodeId + '/attributes/' + attributeId + '?target_value=' + this.pendingAttributes[attributeId])
+    }
+
+    this.pendingAttributes = []
+
+    this.log("Sending command to homee: " + commands.join('/n'))
+
+    commands.forEach(function(command) {
+        this.platform.homee.send(command)
+    }.bind(this));
+}, 200, false)
+
+function debounce(func, wait, immediate) {
+    var timeout;
+    return function() {
+        var context = this, args = arguments;
+        var later = function() {
+            timeout = null;
+            if (!immediate) func.apply(context, args);
+        };
+        var callNow = immediate && !timeout;
+        clearTimeout(timeout);
+        timeout = setTimeout(later, wait);
+        if (callNow) func.apply(context, args);
+    };
+};
 
 HomeeAccessory.prototype.updateValue = function (attribute) {
     var that = this;
